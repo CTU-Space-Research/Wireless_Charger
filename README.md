@@ -53,3 +53,4 @@ data jsou seřazena viz následující kód:
 5. Pro ukončení nabíjení poslat "p" - v případě, že je odebíraný proud přilíš malý (<1 mA), nabíječka se sama odpojí a přechází do COMM_ONLY_STATE.
 6. Kontrolovat error_log, jestli nedošlo k chybě jako např. výpadek spojení s vysílačem. T případě chyby je třeba poslat nejdřív "e" a potom "P".
 
+**Hlavní kód viz main.c ve složce Receiver.**
