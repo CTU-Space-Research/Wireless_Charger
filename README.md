@@ -22,8 +22,8 @@
 	POWER_TRANSFER_STATE = 6, 
 	FAULT_STATE = 7 
 
-4.-5. byte -> unsigned int - output current (v mA)
-6.-7. byte -> unsigned int - output voltage (v mV)
+- 4.-5. byte -> unsigned int - output current (v mA)
+- 6.-7. byte -> unsigned int - output voltage (v mV)
 
 data jsou seřazena viz následující kód:
 	
@@ -38,11 +38,11 @@ data jsou seřazena viz následující kód:
 - čte jako char, viz kód 
 - celkem 5 možných zpráv podle charu:
 
-"P" ---> pokud je v COMM_ONLY_STATE a error_byte == 0 (žádná chyba), zahájí nabíjení = přechod do POWER_TRANSFER_STATE
-"p" ---> ukončí nabíjení, přechod z POWER_TRANSFER_STATE do COMM_ONLY_STATE
-"e" ---> vyřeší chyby = vynuluje error log ---> teprve potom je možné zahájit nabíjení
-"o" ---> ukončí vysílání kompletně a přejde do Ping Phase. Používat v případě, že chcete vysílač oddálit od přijímače (start rakety, servis atd.)
-"a" ---> znovu povolí komunikaci (přejde z Ping Phase do COMM_ONLY_STATE) - použít pouze v případě, že bylo předtím vysláno "o".... edge case
+- "P" ---> pokud je v COMM_ONLY_STATE a error_byte == 0 (žádná chyba), zahájí nabíjení = přechod do POWER_TRANSFER_STATE
+- "p" ---> ukončí nabíjení, přechod z POWER_TRANSFER_STATE do COMM_ONLY_STATE
+- "e" ---> vyřeší chyby = vynuluje error log ---> teprve potom je možné zahájit nabíjení
+- "o" ---> ukončí vysílání kompletně a přejde do Ping Phase. Používat v případě, že chcete vysílač oddálit od přijímače (start rakety, servis atd.)
+- "a" ---> znovu povolí komunikaci (přejde z Ping Phase do COMM_ONLY_STATE) - použít pouze v případě, že bylo předtím vysláno "o".... edge case
 
 
 ## Jak používat nabíječku:
