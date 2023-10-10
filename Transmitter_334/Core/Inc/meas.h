@@ -1,0 +1,63 @@
+/* ******************************************************************************
+ * File:		meas.h		HEADER file
+ * Project: 	Dual ADC DMA regular simultaneous mode Example 01
+ * Description	Analog Input Measurement
+ * Created on: 	Nov 26, 2020
+ * Author: 		cb
+ *******************************************************************************/
+
+#ifndef INC_MEAS_H_
+#define INC_MEAS_H_
+
+#ifdef __cplusplus
+ extern "C" {
+#endif
+
+ // ********************************
+ // *********** INCLUDES ***********
+ // ********************************
+
+// ********* SYSTEM LIBS **********
+//#include "main.h"
+#include "adc.h"
+//#include <math.h>
+#include <stdint.h>
+// ******** Project LIBS **********
+// none so far
+
+// ********************************
+// *********** DEFINES ************
+// ********************************
+
+#define MEAS_ADC1_CHANNELS 3			// ADC channels
+#define NUMBER_OF_MES 50
+#define MES_INTERVAL 30
+#define DATA_INTERVAL NUMBER_OF_MES*MES_INTERVAL
+
+// ********************************
+// *********** TYPEDEFS ***********
+// ********************************
+
+typedef struct {float current;float voltage;float temperature;float power;}measured_values;
+
+
+// ********************************
+// ****** GLOBAL VARIABLES ********
+// ********************************
+
+ extern uint8_t MEAS_ACD1_update;				// measurement complete flag
+ extern measured_values act_vals;
+ //extern float current_values[NUMBER_OF_MES];
+// ********************************
+// ***** Function Prototypes ******
+// ********************************
+
+void MEAS_ADC_start(uint16_t number_of_measurements,char type_of_measurement);
+void MEAS_ADC_stop(void);
+void MEAS_ADC1_eval(uint8_t pos);
+void calculateUITemp(void);
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* INC_MEAS_H_ */

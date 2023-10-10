@@ -1,0 +1,914 @@
+/* USER CODE BEGIN Header */
+/**
+  ******************************************************************************
+  * @file           : main.c
+  * @brief          : Main program body
+  ******************************************************************************
+  * @attention
+  *
+  * Copyright (c) 2023 STMicroelectronics.
+  * All rights reserved.
+  *
+  * This software is licensed under terms that can be found in the LICENSE file
+  * in the root directory of this software component.
+  * If no LICENSE file comes with this software, it is provided AS-IS.
+  *
+  ******************************************************************************
+  */
+/* USER CODE END Header */
+/* Includes ------------------------------------------------------------------*/
+#include "main.h"
+#include "adc.h"
+#include "comp.h"
+#include "dac.h"
+#include "dma.h"
+#include "hrtim.h"
+#include "usart.h"
+#include "gpio.h"
+
+/* Private includes ----------------------------------------------------------*/
+/* USER CODE BEGIN Includes */
+#include "stdbool.h"
+#include "meas.h"
+#include "stdio.h"
+#include "string.h"
+#include "queue.h"
+#include "qi.h"
+/* USER CODE END Includes */
+
+/* Private typedef -----------------------------------------------------------*/
+/* USER CODE BEGIN PTD */
+
+/*struct ASKMOD_byte{
+	bool start_bit;
+	unsigned char data;
+	bool
+};*/
+enum BIT_STATES {START_BIT = 0, DATA_BITS = 1, PARITY_BIT = 2, STOP_BIT = 3 };
+enum PACKET_STATES {PK_PREAMBLE = 0, PK_HEADER = 1, PK_DATA = 2, PK_CHECKSUM = 3 };
+enum OPERATION_STATES { INITIAL_STATE = 1, ANALOG_PING = 2, DIGITAL_PING = 3, COMM_ONLY_STATE = 4, RENEGO_STATE = 5, POWER_TRANSFER_STATE = 6, FAULT_STATE = 7 };
+enum DATA_PACKETS {SIG=0x01,EPT=0x02,CE=0x03,NEGO=0x09,DSR=0x15,SRQ=0x20,ADC=0x25,RP=0x31}; // pridat ješte ADT a PROP, mají ruzne oznaceni podle velikosti
+
+/* USER CODE END PTD */
+
+/* Private define ------------------------------------------------------------*/
+/* USER CODE BEGIN PD */
+#define DAC_TRESHOLD  3650
+#define TOTAL_AVERAGE 10u
+#define LED1 GPIO_PIN_0 //B
+#define LED2 GPIO_PIN_1 //B
+#define LED3 GPIO_PIN_2 //B
+#define PING_IMP GPIO_PIN_14 //B
+#define OUTPUT_EN GPIO_PIN_13 //B
+#define DBG_MSG_SIZE 1
+/* USER CODE END PD */
+
+/* Private macro -------------------------------------------------------------*/
+/* USER CODE BEGIN PM */
+
+/* USER CODE END PM */
+
+/* Private variables ---------------------------------------------------------*/
+
+/* USER CODE BEGIN PV */
+volatile bool new_ASK;
+bool first_half_ASK;
+unsigned int ASK_index;
+unsigned int number_of_ms;
+volatile bool one_ms;
+unsigned char test_byte=0b01010101;
+uint32_t hal_tick;
+//import z transmitteru
+char DBG_UART_buffer[100];
+char ADC_BUFFER[100];
+uint8_t UART_BUFFER[7];
+bool new_dbg_uart_msg;
+bool new_uart_msg;
+uint8_t MEAS_ACD1_update;
+measured_values act_vals;
+bool comp_treshold = false;
+uint16_t dac_treshold = 2680u; //odpovídá 1,2A
+bool run_test = false;
+uint8_t Rx_data[1];	
+unsigned int volatile test_counter=0;
+bool ASK_done = false;
+bool serialized_data[MAX_DATA_PACKET_SIZE];
+uint16_t ASK_size;
+bool send_ce;
+bool FSK_ready=false;
+uint32_t captured_value_FSK;
+uint8_t current_state=DIGITAL_PING;
+bool FSK_test=false;
+bool expecting_answer=false;
+bool expecting_ACK=false;
+uint32_t reference_value_FSK;
+uint16_t FSK_byte_main;
+bool response_pattern = false;
+uint8_t FSK_error=0;
+DecodedDataPacket FSK_packet;	
+uint8_t rp_interval=0;
+uint8_t response_timeout=0;
+uint8_t atn_timeout=0;
+bool no_mute = true;
+bool comm_restored=false;
+/* USER CODE END PV */
+
+/* Private function prototypes -----------------------------------------------*/
+void SystemClock_Config(void);
+/* USER CODE BEGIN PFP */
+//void modulateAskByte(bool modulated_ASK_bits[],unsigned char data_byte);
+void processDBGUART(void);
+int8_t get_control_error(void);
+/* USER CODE END PFP */
+
+/* Private user code ---------------------------------------------------------*/
+/* USER CODE BEGIN 0 */
+void HAL_UART_RxHalfCpltCallback(UART_HandleTypeDef *huart)
+{
+ // HAL_GPIO_TogglePin (GPIOB, GPIO_PIN_3);  // toggle PA0
+}
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) 
+{
+ if(huart->Instance==USART1)
+ {
+ HAL_UART_Receive_DMA(&huart1, Rx_data, DBG_MSG_SIZE);
+ new_dbg_uart_msg=true;
+ }
+
+if(huart->Instance==USART3)
+ {
+ HAL_UART_Receive_DMA(&huart3, Rx_data, DBG_MSG_SIZE);
+ new_uart_msg=true;
+ }
+}
+
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc);
+void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef* hadc);
+
+//queue init
+//TODO PREDELAT NA 11 bitu
+//DataPacket packet1 = { { true, true, true,}, { false, false, true }, { true, false, true, true, false, false, true, true, false }, 3, { false, true } };
+//DataPacket packet2 = { { true, true, false }, { false, false, true }, { false, true, false, true, false, true, false, true, false, true, true }, 4, { true, false } };
+
+
+
+/* USER CODE END 0 */
+
+/**
+  * @brief  The application entry point.
+  * @retval int
+  */
+int main(void)
+{
+  /* USER CODE BEGIN 1 */
+
+  /* USER CODE END 1 */
+
+  /* MCU Configuration--------------------------------------------------------*/
+
+  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
+  HAL_Init();
+
+  /* USER CODE BEGIN Init */
+
+  /* USER CODE END Init */
+
+  /* Configure the system clock */
+  SystemClock_Config();
+
+  /* USER CODE BEGIN SysInit */
+
+  /* USER CODE END SysInit */
+
+  /* Initialize all configured peripherals */
+  MX_GPIO_Init();
+  MX_DMA_Init();
+  MX_HRTIM1_Init();
+  MX_ADC1_Init();
+  MX_ADC2_Init();
+  MX_DAC2_Init();
+  MX_USART1_UART_Init();
+  MX_USART3_UART_Init();
+  MX_COMP2_Init();
+  /* USER CODE BEGIN 2 */
+	//DAC
+	HAL_DAC_Start(&hdac2, DAC_CHANNEL_1);
+	HAL_DAC_SetValue(&hdac2, DAC_CHANNEL_1, DAC_ALIGN_12B_R, dac_treshold);
+	/* START HRTIMERS */
+	//HAL_HRTIM_WaveformOutputStart(&hhrtim1, HRTIM_OUTPUT_TA1);
+	//HAL_HRTIM_WaveformCompareConfig
+	//__HAL_HRTIM_SetCompare
+	//hal_tick = HAL_GetTick();
+	new_ASK = false;
+	first_half_ASK = true;
+	ASK_index = 0;
+	number_of_ms=0;
+	one_ms=false;
+	//unsigned char test_byte=0b01010101;
+	bool button = false;
+	new_dbg_uart_msg = false;
+	new_uart_msg = false;
+	HAL_UART_Receive_DMA (&huart1, Rx_data, DBG_MSG_SIZE);
+	HAL_UART_Receive_DMA (&huart3, Rx_data, DBG_MSG_SIZE);
+	HAL_ADCEx_Calibration_Start(&hadc1,ADC_SINGLE_ENDED);
+	HAL_ADCEx_Calibration_Start(&hadc2,ADC_SINGLE_ENDED);
+	HAL_Delay(10);
+	MEAS_ADC_start(1,2); // start the ADC conversion
+	HAL_COMP_Start_IT(&hcomp2);
+	//ASK modulace ---> vsechno odkomentovat az po Start_IT
+	//*ASK_byte = modulateAskByte(test_byte);
+	//new_ASK=true;
+	HAL_HRTIM_WaveformCountStart(&hhrtim1, HRTIM_TIMERID_TIMER_A);
+	HAL_HRTIM_WaveformCountStart_IT(&hhrtim1, HRTIM_TIMERID_TIMER_A);
+	
+	//pripnuti ping impedance
+	HAL_GPIO_WritePin(GPIOB,PING_IMP,GPIO_PIN_SET);
+	HAL_Delay(1);
+	HAL_GPIO_WritePin(GPIOB,OUTPUT_EN,GPIO_PIN_RESET);
+	HAL_GPIO_WritePin(GPIOB,LED3,GPIO_PIN_SET);
+	HAL_GPIO_WritePin(GPIOB,LED2,GPIO_PIN_RESET);
+	
+	//spusteni timeru pro FSK demodulaci a povoleni preruseni
+	HAL_HRTIM_WaveformCountStart(&hhrtim1, HRTIM_TIMERID_TIMER_B);
+	HAL_HRTIM_WaveformCountStart_IT(&hhrtim1, HRTIM_TIMERID_TIMER_B);
+	//FSK test
+	uint32_t FSK_results[11];
+	uint8_t FSK_index=0;
+	bool FSK_ready_UART=false;
+	uint8_t FSK_msg_index=0;
+	HAL_GPIO_WritePin(GPIOA,GPIO_PIN_5,GPIO_PIN_SET);
+	//load test
+	float prev_current;
+	bool output_connected=false;
+	uint8_t error_code=0;
+	bool power_transfer=false;
+	uint8_t user_data_example=0;
+	bool alow_sig=true;
+	bool ping_imp_connected=true;
+	uint8_t digital_ping_increment=0;
+	bool calm_before_ping=false;
+	uint8_t error_type=0;
+	uint8_t response=0;
+	bool power_transfer_acknowledged=false;
+	bool shutting_down=false;
+	bool user_data_input=false;
+	uint8_t status_msg_interval=0;
+	uint16_t output_current;
+	uint16_t output_voltage;
+	
+	//uint8_t digital_ping_counter=0;
+	//ASK test
+  DataPacket packet;
+  DataPacket CEpacket;
+  packet.message_length = 1;
+  CEpacket.message_length = 1;
+  for (int i = 0; i < PREAMBLE_LENGTH; i++) {
+	packet.preamble[i] = true;
+	CEpacket.preamble[i]=true;
+  }
+	/*modulateAskByte(packet.header, 0x48); //test
+	modulateAskByte(packet.message[0], 0b10101010); //test value
+	modulateAskByte(packet.message[1], 0b10101010); //test value
+	modulateAskByte(packet.message[2], 0b10101010); //test value
+	modulateAskByte(packet.message[3], 0b10101010); //test value
+	modulateAskByte(packet.checksum,calculateCheckSum(packet));
+	serialize_data_packet(packet,serialized_data);*/
+	ASK_size=get_data_packet_size(packet);
+	int8_t ce=0;
+	
+	//ASK
+	Queue ASK_queue;
+	DataPacket dequeued_packet;
+	queue_init(&ASK_queue);
+	
+	//komunikace s raketou
+	UART_BUFFER[0]=0xff;
+  /* USER CODE END 2 */
+
+  /* Infinite loop */
+  /* USER CODE BEGIN WHILE */
+  while (1)
+  {
+    /* USER CODE END WHILE */
+
+    /* USER CODE BEGIN 3 */
+		if (FSK_ready){
+			//HAL_GPIO_TogglePin(GPIOA,GPIO_PIN_5);
+			//FSK_results[FSK_index]=captured_value_FSK;
+			if (FSK_error==0){
+				if (!response_pattern){
+					FSK_msg_index++;
+				error_type=demodulateFskByte(FSK_byte_main,&FSK_packet,FSK_msg_index);
+				if (error_type==0){	
+					if (FSK_msg_index==1){
+						sprintf(ADC_BUFFER,"H:%u\r\n",FSK_packet.header);
+					} else if (FSK_msg_index==2){
+						sprintf(ADC_BUFFER,"M:%u\r\n",FSK_packet.message[0]);						
+					} else if (FSK_msg_index==3){
+						sprintf(ADC_BUFFER,"User data received %c. Sending ACK.\r\n",FSK_packet.message[0]);
+						modulateAskByte(packet.header, 0x15); //DSR
+						modulateAskByte(packet.message[0], 0xFF); //ack potvrzeni o prijeti
+						modulateAskByte(packet.checksum,calculateCheckSum(packet));
+						if (queue_enqueue(&ASK_queue, packet)){
+						} else{
+							sprintf(ADC_BUFFER,"QUEUE FULL\r\n");
+						}
+						
+						
+						rp_interval=0;
+					}
+				} else{
+					sprintf(ADC_BUFFER,"err:%u MSG:%u. Sending NAK.\r\n",error_type,FSK_byte_main);
+					modulateAskByte(packet.header, 0x15); //DSR
+					modulateAskByte(packet.message[0], 0x00); //nak potvrzeni o neprijeti
+					modulateAskByte(packet.checksum,calculateCheckSum(packet));
+					if (queue_enqueue(&ASK_queue, packet)){
+					} else{
+						sprintf(ADC_BUFFER,"QUEUE FULL\r\n");
+					}
+					
+					rp_interval=0;
+				}
+				} else{
+					response = (uint8_t)(FSK_byte_main & 0xFF);
+					switch (response){
+						case 0b11111111: //ack
+							if (current_state==COMM_ONLY_STATE&&power_transfer&&error_code==0){
+								power_transfer_acknowledged=true;
+								response_timeout=0;
+								expecting_ACK=false;
+								sprintf(ADC_BUFFER,"ACK received. CS->PT\r\n");
+							} else if (expecting_ACK){
+								response_timeout=0;
+								sprintf(ADC_BUFFER,"ACK received.\r\n");
+								expecting_ACK=false;
+							} else{
+								if (no_mute){sprintf(ADC_BUFFER,"ACK received as a response for RP.\r\n");
+								}else{sprintf(ADC_BUFFER,"");}
+								if (!comm_restored&&current_state==COMM_ONLY_STATE){
+									sprintf(ADC_BUFFER,"Communication restored.\r\n");
+									comm_restored=true;
+								};
+
+							}
+							break;
+						case 0b01010101: //nak
+							if (current_state==COMM_ONLY_STATE&&power_transfer){
+								power_transfer_acknowledged=false;
+							}
+							break;
+						case 0b10101010: //nd
+							break;
+						case 0b11001100: //atn --- chce neco poslat
+							modulateAskByte(packet.header, 0x15); //DSR
+							modulateAskByte(packet.message[0], 0x33); //poll = pozvani, at posila
+							modulateAskByte(packet.checksum,calculateCheckSum(packet));
+							if (queue_enqueue(&ASK_queue, packet)){
+								sprintf(ADC_BUFFER,"ATN: Inviting Transm.\r\n");
+									FSK_msg_index=0;
+									expecting_answer=true;
+									response_pattern=false;
+									
+							} else{
+								sprintf(ADC_BUFFER,"QUEUE FULL\r\n");
+							}	
+							response_pattern=false;
+							rp_interval=0;
+							break;
+						default:
+							sprintf(ADC_BUFFER,"NR. R:%u,B%u.\r\n",response,FSK_byte_main);
+							break;
+					}
+					if (response!=0b11111111 && expecting_ACK){
+						if (queue_enqueue(&ASK_queue, packet)){
+							sprintf(ADC_BUFFER,"No ACK. Adding DP to queue again. \r\n");
+							response_timeout=0;
+							expecting_answer=true;
+							expecting_ACK=true;
+							response_pattern=true;
+						} else{
+							sprintf(ADC_BUFFER,"QUEUE FULL\r\n");
+						}	
+						
+					}
+					FSK_test=false;
+				}
+			HAL_UART_Transmit_IT(&huart1, (uint8_t *)ADC_BUFFER, strlen(ADC_BUFFER));
+			} 
+			else{
+				//sprintf(ADC_BUFFER,".\r\n");
+				FSK_msg_index=0;
+				FSK_error=0;
+				//FSK_test=false;
+				}
+			if (FSK_msg_index==3){
+					//whole msg sent
+					FSK_msg_index=0;
+					FSK_test=false;
+				}
+			/*if (FSK_index>=10){
+				sprintf(DBG_UART_buffer,"%u\r\n%u\r\n%u\r\n%u\r\n%u\r\n%u\r\n%u\r\n%u\r\n%u\r\n%u\r\n%u\r\n\r\n",FSK_results[0],FSK_results[1],FSK_results[2],FSK_results[3],FSK_results[4],FSK_results[5],FSK_results[6],FSK_results[7],FSK_results[8],FSK_results[9],FSK_results[10]);
+				HAL_UART_Transmit_IT(&huart1, (uint8_t *)DBG_UART_buffer, strlen(DBG_UART_buffer));		
+				//FSK_ready_UART=false;
+				//HAL_Delay(1);
+				FSK_test=false;
+				FSK_index=0;
+				//FSK_ready_UART=true;
+			}else{
+				FSK_index++;
+			}*/
+			FSK_ready=false;
+		}
+		if (ASK_done){
+			ASK_done=false;
+			/*TADY TO ODKOMENTOVAT KDyžtak
+			if(expecting_answer){
+				//reference_value_FSK=HAL_HRTIM_GetCapturedValue(&hhrtim1,HRTIM_TIMERINDEX_TIMER_B,HRTIM_CAPTUREUNIT_1);
+				expecting_answer=false;
+				FSK_test=true;
+			}
+			*///TADY TO ODKOMENTOVAT KDyžtak
+			HAL_Delay(1);
+			HAL_GPIO_WritePin(GPIOA,GPIO_PIN_8,0); //aby to nezustalo takhle vysoko to napeti, viz str14 comms_physical
+		}
+		if (one_ms){
+			button = !HAL_GPIO_ReadPin(GPIOC,GPIO_PIN_13);
+			if (button){
+			}
+			if (current_state==COMM_ONLY_STATE&&number_of_ms==0){
+				if (power_transfer&&error_code==0){
+					modulateAskByte(packet.header, 0x20); //SRQ
+					modulateAskByte(packet.message[0], 0x00); //en
+					modulateAskByte(packet.checksum,calculateCheckSum(packet));
+					for (int i=0;i<3;i++){
+							queue_enqueue(&ASK_queue, packet);
+						}	
+					//queue_enqueue(&ASK_queue, packet);
+					//serialize_data_packet(packet,serialized_data);
+					//error_code=0;
+					sprintf(ADC_BUFFER,"SRQ enqueued. Waiting for Transmitter for ACK.\r\n");
+					expecting_answer=true;
+					response_pattern=true;
+					response_timeout=0;
+					expecting_ACK=true;
+					//power_transfer_acknowledged=true;
+					HAL_UART_Transmit_IT(&huart1, (uint8_t *)ADC_BUFFER, strlen(ADC_BUFFER));
+					new_ASK=true;
+					//number_of_ms=0;
+					}
+				}	
+			if ((number_of_ms%MEAS_INTERVAL)==0){
+				while (!MEAS_ACD1_update){}
+				MEAS_ACD1_update=0;
+				if (current_state==DIGITAL_PING&&alow_sig){
+					if (act_vals.voltage>28&&((calm_before_ping&&digital_ping_increment==0)||digital_ping_increment>0)){
+						digital_ping_increment++;
+						calm_before_ping=false;
+					}else{
+						digital_ping_increment=0;
+						calm_before_ping=true;
+					}
+					if (digital_ping_increment>5){
+						//digital_ping_increment=true;
+						ce = get_control_error();
+						modulateAskByte(packet.header, 0x01); //SIG
+						modulateAskByte(packet.message[0], ce); //test value
+						modulateAskByte(packet.checksum,calculateCheckSum(packet));
+						serialize_data_packet(packet,serialized_data);
+						ASK_size=get_data_packet_size(packet);
+						new_ASK=true;
+						current_state=COMM_ONLY_STATE;
+						number_of_ms=0;
+						comm_restored=false;
+						//sprintf(ADC_BUFFER,"Comm. ready.\r\n");
+						//HAL_UART_Transmit_IT(&huart1, (uint8_t *)ADC_BUFFER, strlen(ADC_BUFFER));					
+						digital_ping_increment=0;
+					}
+				}
+				if (act_vals.current-prev_current<-1.0&&output_connected){//LOAD DISCONNECTED //0.5 puvodne
+					error_code=0x01;
+					current_state=FAULT_STATE;
+				}
+				if (current_state == POWER_TRANSFER_STATE && act_vals.current < 0.001){ //battery is charged
+						send_ce=false;
+						power_transfer=false;
+						power_transfer_acknowledged=false;
+						modulateAskByte(packet.header, 0x02); //EPT
+						modulateAskByte(packet.message[0], 0x01); //CC = charging complete
+						modulateAskByte(packet.checksum,calculateCheckSum(packet));
+						if (queue_enqueue(&ASK_queue, packet)){
+							sprintf(DBG_UART_buffer,"EPT/cc - battery charged.\r\n");
+						} else{
+							sprintf(DBG_UART_buffer,"QUEUE FULL\r\n");
+						}	
+				}
+				prev_current=act_vals.current;
+
+				if (current_state==COMM_ONLY_STATE || current_state==POWER_TRANSFER_STATE){ //if TRANSMITTER terminates the power signal
+					if (act_vals.voltage<25.){ //!shutting_down&&
+						error_code=0x02; //transmitter disconnected the power signal --- user defined
+						current_state=FAULT_STATE;
+						//alow_sig=false;
+					}
+					if (act_vals.voltage>39){//OVERVOLTAGE
+						error_code=0x03;
+						current_state=FAULT_STATE;
+					}
+				}
+				if (act_vals.current>=1.33){ //nad 40 W 
+					error_code=0x04; //over current
+					current_state=FAULT_STATE;
+				}
+				if (error_code!=0&&current_state==FAULT_STATE){
+					
+					HAL_GPIO_WritePin(GPIOB,PING_IMP,GPIO_PIN_SET);
+					HAL_Delay(1);
+					HAL_GPIO_WritePin(GPIOB,OUTPUT_EN,GPIO_PIN_RESET);
+					ping_imp_connected=true;
+					output_connected=false;
+					alow_sig=true;
+					send_ce=false;	
+					power_transfer=false;
+					power_transfer_acknowledged=false;
+					sprintf(DBG_UART_buffer,"ERROR detected:%u\r\n",error_code);
+					HAL_UART_Transmit_IT(&huart1, (uint8_t *)DBG_UART_buffer, strlen(DBG_UART_buffer));
+					if (error_code==0x02){
+						HAL_Delay(300);
+						sprintf(DBG_UART_buffer,"Switching back to DP. Resolve the error!\r\n");
+						HAL_UART_Transmit_IT(&huart1, (uint8_t *)DBG_UART_buffer, strlen(DBG_UART_buffer));
+					}else{
+						//current_state=FAULT_STATE;
+						modulateAskByte(packet.header, 0x02); //EPT
+						modulateAskByte(packet.message[0], error_code); 
+						modulateAskByte(packet.checksum,calculateCheckSum(packet));
+						if (queue_enqueue(&ASK_queue, packet)){
+							sprintf(DBG_UART_buffer,"EPT sent. Switching back to DP. Resolve the error!\r\n");
+						} else{
+							sprintf(DBG_UART_buffer,"QUEUE FULL\r\n");
+						}
+						HAL_UART_Transmit_IT(&huart1, (uint8_t *)DBG_UART_buffer, strlen(DBG_UART_buffer));
+					}
+					current_state=DIGITAL_PING; //to restore the comm.
+						
+				}
+				MEAS_ADC_start(20,1);
+			}
+			if (number_of_ms==150){
+				if (expecting_ACK&&(current_state==COMM_ONLY_STATE||current_state==POWER_TRANSFER_STATE))response_timeout++;
+				if (response_timeout>3){
+						if (queue_enqueue(&ASK_queue, packet)){
+							sprintf(ADC_BUFFER,"ACK timeout. Adding DP to queue again. \r\n");
+							response_timeout=0;
+							expecting_answer=true;
+							expecting_ACK=true;
+							response_pattern=true;
+						} else{
+							sprintf(ADC_BUFFER,"QUEUE FULL\r\n");
+						}	
+				}
+				else if (queue_dequeue(&ASK_queue,&dequeued_packet)){
+						serialize_data_packet(dequeued_packet,serialized_data);
+						ASK_size=get_data_packet_size(dequeued_packet);
+						new_ASK=true;
+						atn_timeout++;
+						if (expecting_answer){
+							//sample_freq=true;
+							//HAL_GPIO_TogglePin(GPIOA,GPIO_PIN_5);
+							response_timeout=0;
+							expecting_answer=false; // nebo navázat z tohohle
+							//HAL_Delay(1);
+							reference_value_FSK=HAL_HRTIM_GetCapturedValue(&hhrtim1,HRTIM_TIMERINDEX_TIMER_B,HRTIM_CAPTUREUNIT_1);
+							FSK_test=true;
+						}
+						//ocekava FSK zpravu
+						
+						//sprintf(ADC_BUFFER,"Data sent.\r\n");
+						//HAL_UART_Transmit_IT(&huart1, (uint8_t *)ADC_BUFFER, strlen(ADC_BUFFER));
+					}				
+				if (current_state==COMM_ONLY_STATE){
+					if (power_transfer&&power_transfer_acknowledged){ //&&power_transfer_acknowledged
+						send_ce=true;
+						output_connected=true;
+						ping_imp_connected=false;
+						current_state=POWER_TRANSFER_STATE;
+						HAL_GPIO_WritePin(GPIOB,OUTPUT_EN,GPIO_PIN_SET);
+						HAL_Delay(1);
+						HAL_GPIO_WritePin(GPIOB,PING_IMP,GPIO_PIN_RESET);
+						sprintf(ADC_BUFFER,"CS->PT\r\n");
+						HAL_UART_Transmit_IT(&huart1, (uint8_t *)ADC_BUFFER, strlen(ADC_BUFFER));
+					}
+				} 
+			}
+			if (number_of_ms>=250){
+			
+				if (error_code!=0&&power_transfer){
+					sprintf(ADC_BUFFER,"Resolve the error: %u before restoring PT.\r\n",error_code);
+					HAL_UART_Transmit_IT(&huart1, (uint8_t *)ADC_BUFFER, strlen(ADC_BUFFER));	
+				}
+				/*if (run_test){
+					sprintf(ADC_BUFFER,"I:%fA\r\nU:%fV\r\nP:%fW\r\n\r\n",act_vals.current,act_vals.voltage,act_vals.power);
+				}*/
+				//HAL_GPIO_TogglePin(GPIOB,LED3);
+				if (send_ce){
+					ce = get_control_error();
+					modulateAskByte(CEpacket.header, 0x03); 
+					modulateAskByte(CEpacket.message[0], ce); //test value
+					modulateAskByte(CEpacket.checksum,calculateCheckSum(packet));
+					serialize_data_packet(CEpacket,serialized_data);
+					ASK_size=get_data_packet_size(CEpacket);
+					//if (run_test)sprintf(ADC_BUFFER,"I:%fA\r\nU:%fV\r\nP:%fW\r\nCE:%d\r\n",act_vals.current,act_vals.voltage,act_vals.power,ce);
+					new_ASK=true;
+					//send_ce=false;
+				}
+				if (current_state==POWER_TRANSFER_STATE && !send_ce){
+						output_connected=false;
+						ping_imp_connected=true;
+						shutting_down=false;
+						if (alow_sig){
+							current_state=COMM_ONLY_STATE;
+							sprintf(ADC_BUFFER,"PT->CS\r\n");
+						}else{
+							current_state=DIGITAL_PING;
+							sprintf(ADC_BUFFER,"PT->DP\r\n");
+						}
+						HAL_GPIO_WritePin(GPIOB,PING_IMP,GPIO_PIN_SET);
+						HAL_Delay(1);
+						HAL_GPIO_WritePin(GPIOB,OUTPUT_EN,GPIO_PIN_RESET);	
+						HAL_UART_Transmit_IT(&huart1, (uint8_t *)ADC_BUFFER, strlen(ADC_BUFFER));
+				}
+				number_of_ms=0;
+				status_msg_interval++;
+				if (status_msg_interval>=4){
+					status_msg_interval=0;
+					//poslat status
+					/*
+					UART_BUFFER[1]=0x01;
+					UART_BUFFER[2]=0x02;
+					UART_BUFFER[3]=0x03;
+					UART_BUFFER[4]=0x04;
+					UART_BUFFER[5]=0x05;
+					UART_BUFFER[6]=0x06;
+					*/
+					UART_BUFFER[1]=error_code;
+					UART_BUFFER[2]=current_state;
+					// Break down output_current and output_voltage into two uint8_t bytes each
+					output_current=(uint16_t) (act_vals.current*1000);
+					output_voltage=(uint16_t) (act_vals.voltage*1000);
+					UART_BUFFER[3] = (uint8_t)(output_current & 0xFF);
+					// Low byte of output_current
+					UART_BUFFER[4] = (uint8_t)((output_current >> 8) & 0xFF);    // High byte of output_current
+					UART_BUFFER[5] = (uint8_t)(output_voltage & 0xFF);           // Low byte of output_voltage
+					UART_BUFFER[6] = (uint8_t)((output_voltage >> 8) & 0xFF);    // High byte of output_voltage
+					if (UART_BUFFER[3]==0xff){UART_BUFFER[3]=0xfe;}
+					if (UART_BUFFER[4]==0xff){UART_BUFFER[4]=0xfe;}
+					if (UART_BUFFER[5]==0xff){UART_BUFFER[5]=0xfe;}
+					if (UART_BUFFER[6]==0xff){UART_BUFFER[6]=0xfe;}
+		
+					HAL_UART_Transmit_IT(&huart3, (uint8_t *)UART_BUFFER, 7); //zkontrolovat
+				}
+				//if (run_test || send_ce){
+				if (current_state==POWER_TRANSFER_STATE||current_state==COMM_ONLY_STATE){
+					if (rp_interval%2&&run_test){
+							sprintf(ADC_BUFFER,"I:%fA\r\nU:%fV\r\nP:%fW\r\nCE:%d\r\n",act_vals.current,act_vals.voltage,act_vals.power,ce);
+							HAL_UART_Transmit_IT(&huart1, (uint8_t *)ADC_BUFFER, strlen(ADC_BUFFER));
+					}
+					rp_interval++;
+					if (rp_interval>3&&!expecting_ACK){
+						modulateAskByte(packet.header, 0x04); // RP8
+						modulateAskByte(packet.message[0], (uint8_t)(128*(35./act_vals.power))); //received power
+						modulateAskByte(packet.checksum,calculateCheckSum(packet));
+						if (queue_enqueue(&ASK_queue, packet)){
+							//if (!run_test)sprintf(ADC_BUFFER,"RP enqued\r\n");
+							//HAL_UART_Transmit_IT(&huart1, (uint8_t *)ADC_BUFFER, strlen(ADC_BUFFER));
+						} else{
+							sprintf(ADC_BUFFER,"QUEUE FULL\r\n");
+							HAL_UART_Transmit_IT(&huart1, (uint8_t *)ADC_BUFFER, strlen(ADC_BUFFER));
+						}
+						expecting_answer=true;
+						response_pattern=true;
+						rp_interval=0;
+						}	
+				}
+
+			}
+			one_ms=false;
+			number_of_ms++;	
+			if (new_dbg_uart_msg||new_uart_msg){
+				new_dbg_uart_msg=false;
+				new_uart_msg=false;
+				if (user_data_input){
+						modulateAskByte(packet.header, 0x18); //PROP
+						modulateAskByte(packet.message[0], Rx_data[0]);
+						modulateAskByte(packet.checksum,calculateCheckSum(packet));
+						if (queue_enqueue(&ASK_queue, packet)){
+							sprintf(DBG_UART_buffer,"\r\nUser data enqued: %c\r\n",Rx_data[0]);
+							user_data_example++;
+							expecting_answer=true;
+							expecting_ACK=true;
+							response_pattern=true;
+						} else{
+							sprintf(DBG_UART_buffer,"QUEUE FULL\r\n");
+						}
+						user_data_input=false;
+				} else{
+					switch (Rx_data[0])
+					{
+						case 'l':
+							HAL_GPIO_TogglePin(GPIOB,LED2);
+							sprintf(DBG_UART_buffer,"LED3 Toggled!\r\n\r\n");
+							break;
+						case 'v':
+							sprintf(DBG_UART_buffer,"current: %f A\r\nVoltage: %f V\r\n\r\n",act_vals.current,act_vals.voltage);
+							break;
+						case 'i':
+							sprintf(DBG_UART_buffer,"I am RECEIVER\r\n\r\n");
+							HAL_Delay(1);
+							break;
+						case 't':
+							run_test=!run_test;
+							MEAS_ADC_start(10,1);
+							if (run_test){
+								sprintf(DBG_UART_buffer,"Test started. Sending data:\r\n\r\n");
+								}
+							else{ 
+								sprintf(DBG_UART_buffer,"End of test.\r\n\r\n");
+								}
+							break;
+						case 'P':
+							sprintf(DBG_UART_buffer,"SRQ/en\r\n");
+							HAL_Delay(1);
+							power_transfer=true;
+							number_of_ms=0;
+							break;
+						case 'p':
+							send_ce=false;
+							power_transfer=false;
+							power_transfer_acknowledged=false;
+							modulateAskByte(packet.header, 0x02); //EPT
+							modulateAskByte(packet.message[0], 0x01); //CC = charging complete
+							modulateAskByte(packet.checksum,calculateCheckSum(packet));
+							for (int i=0;i<3;i++){
+								queue_enqueue(&ASK_queue, packet);
+							}			
+							sprintf(DBG_UART_buffer,"EPT/cc\r\n");
+							HAL_Delay(1);
+							break;
+						case 'q':
+							sprintf(DBG_UART_buffer,"ENTER user data: ");
+							user_data_input=true;
+							break;
+						case 'e':
+							if (error_code != 0){
+								sprintf(DBG_UART_buffer,"Fault %u resolved.\r\n",error_code);
+								//current_state=DIGITAL_PING;
+								error_code=0;
+							} else{
+								sprintf(DBG_UART_buffer,"No fault to be resolved.\r\n");
+							}
+							break;
+						case 's':
+							sprintf(DBG_UART_buffer,"Error:%u\r\nCurrent state:%u\r\nPing imp:%u\r\nOutput:%u\r\n",error_code,current_state,ping_imp_connected,output_connected);
+							break;
+						case 'o':
+							//use to turn the power signal completely off. Restore with 1
+							modulateAskByte(packet.header, 0x02); //EPT
+							modulateAskByte(packet.message[0], 0x0C); //reping
+							modulateAskByte(packet.checksum,calculateCheckSum(packet));
+							if (queue_enqueue(&ASK_queue, packet)){
+								sprintf(DBG_UART_buffer,"PS over.\r\n");
+							} else{
+								sprintf(DBG_UART_buffer,"QUEUE FULL\r\n");
+							}
+							alow_sig=false;
+							send_ce=false;
+							power_transfer=false;
+							power_transfer_acknowledged=false;
+							shutting_down=true;
+							current_state=DIGITAL_PING;
+							HAL_GPIO_WritePin(GPIOB,PING_IMP,GPIO_PIN_SET);
+							HAL_Delay(1);
+							HAL_GPIO_WritePin(GPIOB,OUTPUT_EN,GPIO_PIN_RESET);	
+							break;
+						case 'a':
+							sprintf(DBG_UART_buffer,"SIG allowed.\r\n");
+							alow_sig=true;
+							break;
+						case 'A':
+							sprintf(DBG_UART_buffer,"SIG not allowed.\r\n");
+							alow_sig=false;
+							break;
+						case 'm':
+							no_mute=!no_mute;
+							sprintf(DBG_UART_buffer,"MSGs (un)muted!\r\n");
+							break;
+						default:
+							sprintf(DBG_UART_buffer,"Invalid char!\r\n\r\n");
+							break;
+							
+					}
+				}
+				HAL_UART_Transmit_IT(&huart1, (uint8_t *)DBG_UART_buffer, strlen(DBG_UART_buffer));
+			}
+		}
+  }
+  /* USER CODE END 3 */
+}
+
+/**
+  * @brief System Clock Configuration
+  * @retval None
+  */
+void SystemClock_Config(void)
+{
+  RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+  RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+  RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
+
+  /** Initializes the RCC Oscillators according to the specified parameters
+  * in the RCC_OscInitTypeDef structure.
+  */
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
+  RCC_OscInitStruct.HSEState = RCC_HSE_ON;
+  RCC_OscInitStruct.HSEPredivValue = RCC_HSE_PREDIV_DIV1;
+  RCC_OscInitStruct.HSIState = RCC_HSI_ON;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
+  RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL8;
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Initializes the CPU, AHB and APB buses clocks
+  */
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
+                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
+  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
+  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
+
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_HRTIM1|RCC_PERIPHCLK_USART1;
+  PeriphClkInit.Usart1ClockSelection = RCC_USART1CLKSOURCE_PCLK1;
+  PeriphClkInit.Hrtim1ClockSelection = RCC_HRTIM1CLK_PLLCLK;
+  if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
+  {
+    Error_Handler();
+  }
+}
+
+/* USER CODE BEGIN 4 */
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
+   if(hadc) MEAS_ADC1_eval(1);
+}
+
+void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef* hadc) {
+   if(hadc) MEAS_ADC1_eval(0);
+}
+
+int8_t get_control_error(void){
+	float control_error = 29.8; //target voltage on output;
+	control_error -= act_vals.voltage;
+	control_error /= 10.0; //upravit rozsah aby rozliseni bylo 50 mV
+	control_error *=127.; //128 by melo bejt
+	if (control_error>127)control_error=127;
+	else if (control_error<-128)control_error=-128;
+	return (int8_t) control_error;
+}
+/* USER CODE END 4 */
+
+/**
+  * @brief  This function is executed in case of error occurrence.
+  * @retval None
+  */
+void Error_Handler(void)
+{
+  /* USER CODE BEGIN Error_Handler_Debug */
+  /* User can add his own implementation to report the HAL error return state */
+  __disable_irq();
+  while (1)
+  {
+  }
+  /* USER CODE END Error_Handler_Debug */
+}
+
+#ifdef  USE_FULL_ASSERT
+/**
+  * @brief  Reports the name of the source file and the source line number
+  *         where the assert_param error has occurred.
+  * @param  file: pointer to the source file name
+  * @param  line: assert_param error line source number
+  * @retval None
+  */
+void assert_failed(uint8_t *file, uint32_t line)
+{
+  /* USER CODE BEGIN 6 */
+  /* User can add his own implementation to report the file name and line number,
+     ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
+  /* USER CODE END 6 */
+}
+#endif /* USE_FULL_ASSERT */

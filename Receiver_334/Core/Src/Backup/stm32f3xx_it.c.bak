@@ -1,0 +1,404 @@
+/* USER CODE BEGIN Header */
+/**
+  ******************************************************************************
+  * @file    stm32f3xx_it.c
+  * @brief   Interrupt Service Routines.
+  ******************************************************************************
+  * @attention
+  *
+  * Copyright (c) 2023 STMicroelectronics.
+  * All rights reserved.
+  *
+  * This software is licensed under terms that can be found in the LICENSE file
+  * in the root directory of this software component.
+  * If no LICENSE file comes with this software, it is provided AS-IS.
+  *
+  ******************************************************************************
+  */
+/* USER CODE END Header */
+
+/* Includes ------------------------------------------------------------------*/
+#include "main.h"
+#include "stm32f3xx_it.h"
+/* Private includes ----------------------------------------------------------*/
+/* USER CODE BEGIN Includes */
+#include "stdbool.h"
+#include "meas.h."
+#include "queue.h"
+/* USER CODE END Includes */
+
+/* Private typedef -----------------------------------------------------------*/
+/* USER CODE BEGIN TD */
+
+/* USER CODE END TD */
+
+/* Private define ------------------------------------------------------------*/
+/* USER CODE BEGIN PD */
+#define MIN_FSK_DIFFERENCE 200//nejlepsi 1000 //800
+/* USER CODE END PD */
+
+/* Private macro -------------------------------------------------------------*/
+/* USER CODE BEGIN PM */
+
+/* USER CODE END PM */
+
+/* Private variables ---------------------------------------------------------*/
+/* USER CODE BEGIN PV */
+
+extern bool new_ASK;
+extern bool first_half_ASK;
+extern unsigned char ASK_index;
+extern bool ASK_byte[11];
+extern bool one_ms;
+extern bool new_dbg_uart_msg;
+uint32_t capture_value;
+extern bool comp_treshold;
+extern unsigned int test_counter;
+extern bool ASK_done;
+extern bool ASK_second;
+extern uint16_t ASK_size;
+extern bool serialized_data[MAX_DATA_PACKET_SIZE];
+extern bool FSK_ready;
+extern uint32_t captured_value_FSK;
+extern uint32_t reference_value_FSK;
+extern bool FSK_test;
+extern bool expecting_answer;
+uint8_t FSK_byte_position=0;
+bool first_half_FSK=true;
+bool zero_flag=false;
+bool possible_FSK=false;
+uint16_t FSK_byte;
+extern uint16_t FSK_byte_main;
+extern bool response_pattern;
+extern uint8_t FSK_error;
+/* USER CODE END PV */
+
+/* Private function prototypes -----------------------------------------------*/
+/* USER CODE BEGIN PFP */
+
+/* USER CODE END PFP */
+
+/* Private user code ---------------------------------------------------------*/
+/* USER CODE BEGIN 0 */
+
+/* USER CODE END 0 */
+
+/* External variables --------------------------------------------------------*/
+extern DMA_HandleTypeDef hdma_adc1;
+extern COMP_HandleTypeDef hcomp2;
+extern HRTIM_HandleTypeDef hhrtim1;
+extern DMA_HandleTypeDef hdma_usart1_rx;
+extern UART_HandleTypeDef huart1;
+/* USER CODE BEGIN EV */
+
+/* USER CODE END EV */
+
+/******************************************************************************/
+/*           Cortex-M4 Processor Interruption and Exception Handlers          */
+/******************************************************************************/
+/**
+  * @brief This function handles Non maskable interrupt.
+  */
+void NMI_Handler(void)
+{
+  /* USER CODE BEGIN NonMaskableInt_IRQn 0 */
+
+  /* USER CODE END NonMaskableInt_IRQn 0 */
+  /* USER CODE BEGIN NonMaskableInt_IRQn 1 */
+  while (1)
+  {
+  }
+  /* USER CODE END NonMaskableInt_IRQn 1 */
+}
+
+/**
+  * @brief This function handles Hard fault interrupt.
+  */
+void HardFault_Handler(void)
+{
+  /* USER CODE BEGIN HardFault_IRQn 0 */
+
+  /* USER CODE END HardFault_IRQn 0 */
+  while (1)
+  {
+    /* USER CODE BEGIN W1_HardFault_IRQn 0 */
+    /* USER CODE END W1_HardFault_IRQn 0 */
+  }
+}
+
+/**
+  * @brief This function handles Memory management fault.
+  */
+void MemManage_Handler(void)
+{
+  /* USER CODE BEGIN MemoryManagement_IRQn 0 */
+
+  /* USER CODE END MemoryManagement_IRQn 0 */
+  while (1)
+  {
+    /* USER CODE BEGIN W1_MemoryManagement_IRQn 0 */
+    /* USER CODE END W1_MemoryManagement_IRQn 0 */
+  }
+}
+
+/**
+  * @brief This function handles Pre-fetch fault, memory access fault.
+  */
+void BusFault_Handler(void)
+{
+  /* USER CODE BEGIN BusFault_IRQn 0 */
+
+  /* USER CODE END BusFault_IRQn 0 */
+  while (1)
+  {
+    /* USER CODE BEGIN W1_BusFault_IRQn 0 */
+    /* USER CODE END W1_BusFault_IRQn 0 */
+  }
+}
+
+/**
+  * @brief This function handles Undefined instruction or illegal state.
+  */
+void UsageFault_Handler(void)
+{
+  /* USER CODE BEGIN UsageFault_IRQn 0 */
+
+  /* USER CODE END UsageFault_IRQn 0 */
+  while (1)
+  {
+    /* USER CODE BEGIN W1_UsageFault_IRQn 0 */
+    /* USER CODE END W1_UsageFault_IRQn 0 */
+  }
+}
+
+/**
+  * @brief This function handles System service call via SWI instruction.
+  */
+void SVC_Handler(void)
+{
+  /* USER CODE BEGIN SVCall_IRQn 0 */
+
+  /* USER CODE END SVCall_IRQn 0 */
+  /* USER CODE BEGIN SVCall_IRQn 1 */
+
+  /* USER CODE END SVCall_IRQn 1 */
+}
+
+/**
+  * @brief This function handles Debug monitor.
+  */
+void DebugMon_Handler(void)
+{
+  /* USER CODE BEGIN DebugMonitor_IRQn 0 */
+
+  /* USER CODE END DebugMonitor_IRQn 0 */
+  /* USER CODE BEGIN DebugMonitor_IRQn 1 */
+
+  /* USER CODE END DebugMonitor_IRQn 1 */
+}
+
+/**
+  * @brief This function handles Pendable request for system service.
+  */
+void PendSV_Handler(void)
+{
+  /* USER CODE BEGIN PendSV_IRQn 0 */
+
+  /* USER CODE END PendSV_IRQn 0 */
+  /* USER CODE BEGIN PendSV_IRQn 1 */
+
+  /* USER CODE END PendSV_IRQn 1 */
+}
+
+/**
+  * @brief This function handles System tick timer.
+  */
+void SysTick_Handler(void)
+{
+  /* USER CODE BEGIN SysTick_IRQn 0 */
+  /* USER CODE END SysTick_IRQn 0 */
+  HAL_IncTick();
+  /* USER CODE BEGIN SysTick_IRQn 1 */
+	one_ms=true;
+  /* USER CODE END SysTick_IRQn 1 */
+}
+
+/******************************************************************************/
+/* STM32F3xx Peripheral Interrupt Handlers                                    */
+/* Add here the Interrupt Handlers for the used peripherals.                  */
+/* For the available peripheral interrupt handler names,                      */
+/* please refer to the startup file (startup_stm32f3xx.s).                    */
+/******************************************************************************/
+
+/**
+  * @brief This function handles DMA1 channel1 global interrupt.
+  */
+void DMA1_Channel1_IRQHandler(void)
+{
+  /* USER CODE BEGIN DMA1_Channel1_IRQn 0 */
+
+  /* USER CODE END DMA1_Channel1_IRQn 0 */
+  HAL_DMA_IRQHandler(&hdma_adc1);
+  /* USER CODE BEGIN DMA1_Channel1_IRQn 1 */
+
+  /* USER CODE END DMA1_Channel1_IRQn 1 */
+}
+
+/**
+  * @brief This function handles DMA1 channel5 global interrupt.
+  */
+void DMA1_Channel5_IRQHandler(void)
+{
+  /* USER CODE BEGIN DMA1_Channel5_IRQn 0 */
+
+  /* USER CODE END DMA1_Channel5_IRQn 0 */
+  HAL_DMA_IRQHandler(&hdma_usart1_rx);
+  /* USER CODE BEGIN DMA1_Channel5_IRQn 1 */
+
+  /* USER CODE END DMA1_Channel5_IRQn 1 */
+}
+
+/**
+  * @brief This function handles USART1 global interrupt / USART1 wake-up interrupt through EXT line 25.
+  */
+void USART1_IRQHandler(void)
+{
+  /* USER CODE BEGIN USART1_IRQn 0 */
+
+  /* USER CODE END USART1_IRQn 0 */
+  HAL_UART_IRQHandler(&huart1);
+  /* USER CODE BEGIN USART1_IRQn 1 */
+
+  /* USER CODE END USART1_IRQn 1 */
+}
+
+/**
+  * @brief This function handles COMP2 global interrupt through EXTI line 22.
+  */
+void COMP2_IRQHandler(void)
+{
+  /* USER CODE BEGIN COMP2_IRQn 0 */
+
+  /* USER CODE END COMP2_IRQn 0 */
+  HAL_COMP_IRQHandler(&hcomp2);
+  /* USER CODE BEGIN COMP2_IRQn 1 */
+	comp_treshold = true;
+  /* USER CODE END COMP2_IRQn 1 */
+}
+
+/**
+  * @brief This function handles HRTIM timer A global interrupt.
+  */
+void HRTIM1_TIMA_IRQHandler(void)
+{
+  /* USER CODE BEGIN HRTIM1_TIMA_IRQn 0 */
+  /* USER CODE END HRTIM1_TIMA_IRQn 0 */
+  HAL_HRTIM_IRQHandler(&hhrtim1,HRTIM_TIMERINDEX_TIMER_A);
+  /* USER CODE BEGIN HRTIM1_TIMA_IRQn 1 */
+	HAL_HRTIM_WaveformCountStop_IT(&hhrtim1, HRTIM_TIMERID_TIMER_A);
+	if (new_ASK){
+		if (!first_half_ASK){
+			if(serialized_data[ASK_index]){
+				HAL_GPIO_TogglePin(GPIOA,GPIO_PIN_8);
+			}
+			ASK_index++;
+	  } else{
+			HAL_GPIO_TogglePin(GPIOA,GPIO_PIN_8);
+			if (ASK_index>=ASK_size){ //zmena--> je potreba, aby tam byla jeste ta posledni hrana (jednicka na konci)
+				ASK_index=0;
+				new_ASK=false;
+				ASK_done=true;
+				first_half_ASK=!first_half_ASK; //aby to priste zacinalo normalne s prvni pulkou
+				//pridano
+			}
+		}
+		first_half_ASK=!first_half_ASK;
+		/*if (ASK_index>=ASK_size){
+			ASK_index=0;
+			new_ASK=false;
+			ASK_done=true;
+		}*/
+	}
+	HAL_HRTIM_WaveformCountStart_IT(&hhrtim1, HRTIM_TIMERID_TIMER_A);
+  /* USER CODE END HRTIM1_TIMA_IRQn 1 */
+}
+
+/**
+  * @brief This function handles HRTIM timer B global interrupt.
+  */
+void HRTIM1_TIMB_IRQHandler(void)
+{
+  /* USER CODE BEGIN HRTIM1_TIMB_IRQn 0 */
+  uint32_t difference;
+  if (FSK_test){
+	captured_value_FSK = HAL_HRTIM_GetCapturedValue(&hhrtim1,HRTIM_TIMERINDEX_TIMER_B,HRTIM_CAPTUREUNIT_1);
+	difference = (captured_value_FSK > reference_value_FSK) ? (captured_value_FSK - reference_value_FSK) : (reference_value_FSK - captured_value_FSK);
+	if (possible_FSK){
+		if (difference>MIN_FSK_DIFFERENCE){
+			if (first_half_FSK){
+				zero_flag=true;
+			} else{
+				FSK_byte |= (1 << FSK_byte_position);				
+			}
+		} else{
+			if (zero_flag){
+				zero_flag=false;
+			}else{
+				//hodit sem toggle
+				//podivat se, ze transm. meni tu frekvenci fakt, jak ma
+				//atn a ack fungujou, protoze maj na zacatku jednicku, problem je v ty nule
+				//nebo zkusit ref. value-hloubka...
+				//zkusit na frekvencich odpovidajici pingu
+				FSK_error=1;
+			}
+		}
+		if (!first_half_FSK){
+			FSK_byte_position++;
+		}
+		first_half_FSK=!first_half_FSK;
+		reference_value_FSK=captured_value_FSK;
+		if (FSK_byte_position==11&&!response_pattern){
+			FSK_ready=true;
+			FSK_byte_main=FSK_byte;
+			FSK_byte=0;
+			FSK_byte_position=0;
+			zero_flag=false;
+			possible_FSK=false;
+			difference=0;
+		} else if (FSK_byte_position==8&&response_pattern){
+			FSK_ready=true;
+			FSK_byte_main=FSK_byte;
+			FSK_byte=0;
+			FSK_byte_position=0;
+			zero_flag=false;
+			possible_FSK=false;
+			difference=0;
+		}
+	}
+	else if (difference>MIN_FSK_DIFFERENCE&&!possible_FSK){
+		//HAL_GPIO_TogglePin(GPIOA,GPIO_PIN_5);
+		//HAL_GPIO_TogglePin(GPIOA,GPIO_PIN_5);
+		possible_FSK=true;
+		first_half_FSK=false;
+		zero_flag=true;
+		reference_value_FSK=captured_value_FSK;
+	}
+	if (FSK_error!=0){
+		possible_FSK=false;
+		zero_flag=false;
+		difference=0;
+		FSK_byte=0;
+		FSK_byte_position=0;
+		FSK_ready=true;
+	}
+  }
+  /* USER CODE END HRTIM1_TIMB_IRQn 0 */
+  HAL_HRTIM_IRQHandler(&hhrtim1,HRTIM_TIMERINDEX_TIMER_B);
+  /* USER CODE BEGIN HRTIM1_TIMB_IRQn 1 */
+	//test_counter++;
+  /* USER CODE END HRTIM1_TIMB_IRQn 1 */
+}
+
+/* USER CODE BEGIN 1 */
+
+/* USER CODE END 1 */

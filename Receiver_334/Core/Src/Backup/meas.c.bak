@@ -1,0 +1,232 @@
+/* ******************************************************************************
+ * File:		rtb_meas.c
+ * Project: 	Dual ADC DMA regular simultaneous mode Example 01
+ * Description	Analog Input Measurement
+ * Created on: 	Nov 26, 2020
+ * Author: 		cb
+ *******************************************************************************/
+
+// ********************************
+// *********** INCLUDES ***********
+// ********************************
+
+#include "meas.h"
+
+// ********* SYSTEM LIBS **********
+#include "adc.h"
+#include <math.h>
+
+// ********************************
+// *********** DEFINES ************
+// ********************************
+
+#define ADC1_OVERSAMLING 0	// ADC value shifting (oversamling)
+// 0x Oversamling: ADC-REsolution = 12 bit (2^12 = 4096)
+// 1x Oversampling: 12 bit --> 13 bit (2^13 = 8192) --> Buffer Size: 4^1 = 4
+// 2x Oversampling: 12 bit --> 14 bit (2^14 = 16384) --> Buffer Size: 4^2 = 16
+// 3x Oversampling: 12 bit --> 15 bit (2^15 = 32768) --> Buffer Size: 4^3 = 64
+// 4x Oversampling: 12 bit --> 16 bit (2^16 = 65535) --> Buffer Size: 4^4 = 256
+// Buffer size must match oversamling!!
+#define ADC1_BUFFER_SZ 1			// ADC Buffer size per channel
+#define VOLTAGE_GAIN 22.2766
+#define CURRENT_GAIN 1.8
+#define TEMP_GAIN 0
+#define CURRENT_OFFSET 0.033
+#define CURRENT_CALIBRATION_GAIN 1.079
+#define VOLTAGE_CALIBRATION_GAIN 1.0
+#define MAX_NUMBER_OF_MEASUREMENTS 100
+
+static const float ADC_MaxVal = 4096.0F;	// ADC max. value (12 bit + Oversamling)
+static const float ADV_RevVal = 3.3F;		// ADC reference voltage
+
+// Parameters for calculating the CPU Temperature
+//static const float CPUTemp_V25 = 1.43F;		// 1.43 Volt
+//static const float CPUTemp_aSlope = 4.3;	// 4.3 mV/°C (from Datasheet STM23F103x8)
+
+// LED1 blink rate (ADC acticity LED)
+//static const uint16_t ADC_ledctr_max = 500;
+
+// ********************************
+// ********** VARIABLES ***********
+// ********************************
+
+uint16_t MEAS_samplectr;
+uint16_t total_measurements=0;
+uint16_t actual_measurement=0;
+// In ADC1+ADC2 Multimode configuration, ADC2 uses the upper two bytes in ADC1 DMA Buffer
+// --> channel count needs to be divided by 2
+uint32_t ADC1_Buffer[ADC1_BUFFER_SZ * (MEAS_ADC1_CHANNELS / 2) * 2];					// * 2 --> Double Buffer for DMA
+static const uint16_t ADC1_BufferSize = ADC1_BUFFER_SZ * (MEAS_ADC1_CHANNELS / 2);		// ADC1 "half" Buffer size
+
+// these two buffers are only needed for the tutorial
+uint16_t ADC1_Brf[ADC1_BUFFER_SZ * (MEAS_ADC1_CHANNELS / 2)];
+uint16_t ADC2_Brf[ADC1_BUFFER_SZ * (MEAS_ADC1_CHANNELS / 2)];
+
+uint32_t adc[MEAS_ADC1_CHANNELS];	// ADC1 value accumulator
+float adcf[MEAS_ADC1_CHANNELS];		// ADC1 voltage
+uint32_t i_raw[MAX_NUMBER_OF_MEASUREMENTS];
+uint32_t u_raw[MAX_NUMBER_OF_MEASUREMENTS];
+uint32_t temp_raw[MAX_NUMBER_OF_MEASUREMENTS];
+float u_sum;
+float i_sum;
+float temp_sum;
+char type; //0 -> only current, 1-> voltage and current, 2-> all
+//float CPU_Temp;					// CPU Temperature
+
+// ********************************
+// ********** PROTOTYPES **********
+// ********************************
+
+void CPU_GetTemperature(float* Voltage, float* CPUTemp);
+
+// ********************************
+// *** FUNCTION IMPLEMENTATION ****
+// ********************************
+
+void MEAS_ADC_start(uint16_t number_of_measurements,char type_of_measurement) {
+	// @brief	start ADC
+	// Start ADC1+ADC2 in Multimode configuration
+	HAL_ADC_Start(&hadc2);																	// start ADC2 (slave) first!
+	HAL_ADCEx_MultiModeStart_DMA(&hadc1, ADC1_Buffer, (uint32_t)(ADC1_BufferSize * 2)); 	// start ADC1 /w Double Buffer
+	total_measurements=number_of_measurements;
+	actual_measurement=0;
+	type=type_of_measurement;
+	i_sum=0.;
+	u_sum=0.;
+	temp_sum=0.;
+}
+
+void MEAS_ADC_stop(void) {
+	// @brief	stop ADC
+	// @param	none
+	// @return	none, void
+	HAL_ADC_Stop(&hadc2);
+	HAL_ADCEx_MultiModeStop_DMA(&hadc1);
+
+}
+
+void MEAS_ADC1_eval(uint8_t pos) {
+	// @brief 	ADC Conversion Complete Interrupt Callback
+	// @param	U8 pos	--> first half (pos=0) or 2nd half(pos>0) of buffer ...
+	// @return	none, void
+	// @description / usage
+	// ADC+DMA using "double-buffer" technique:
+	// the ADC buffer has the size: Channels * Buffer * 2 and
+	// is separated into a lower half (--> uint8_t pos) and a upper half
+	// there are 2 interrupts:
+	// void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
+	// which indicates that, the upper end of the Buffer has been reached
+	// and
+	// void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef* hadc)
+	// which indicates, that the first half of the Buffer has been filled.
+	// so: while we are working on the upper half, the lower half is filled
+	// and vice versa. this makes sure, that there is no interference on the
+	// values, while sampling and calculating the results
+	
+
+	uint16_t bP = 0; 					// "bP" = Buffer Position
+	if(pos) bP = ADC1_BufferSize;		// use upper half of buffer (Dual ADC)
+
+	// ADC channels are organized as follows:
+	// e.g. 3 Channels a, b, c - as defined in the CubeMX ADC setup
+	// the resulting buffer looks like
+	// [a0,b0,c0,a1,b1,c1,a2,b2,c2 ...]
+	// with a,b,c = channels - 0,1,2, = samples
+	// in Dual Dual regular simultaneous mode
+	// ADC1 uses the lower 2 bytes and ADC2 uses the upper two bytes
+
+	uint16_t i,j;
+	uint32_t val;
+
+	for(i=0; i<ADC1_BufferSize; i++) {
+		// split ADC1 and ADC2 samples in separate arrays
+		// this step is not necessary for an real application,
+		// it's just implemented here for the tutorial
+		val = *(ADC1_Buffer + bP + i);
+		ADC1_Brf[i] = (uint16_t)(val & 0xffff);
+		ADC2_Brf[i] = (uint16_t)((val >> 16) & 0xffff);
+	}
+
+
+	// Dual ADC (ADC1 + ADC2 Synchronous)
+	// accumulate all ADC readings
+	for(i = 0; i<ADC1_BUFFER_SZ; i++) {
+		for(j=0;j<(MEAS_ADC1_CHANNELS / 2);j++) {
+			val = *(ADC1_Buffer + bP);
+			if(i) {
+				*(adc + (2* j)) += (val & 0xffff); 				// sum up all elements from ADC1
+				*(adc + (2 *j) + 1) += ((val >> 16) & 0xffff); 	// sum up all elements from ADC2
+			}
+			else {
+				*(adc + (2* j)) = (val & 0xffff); 				// initialize new on first run from ADC1
+				*(adc + (2 *j) + 1) = ((val >> 16) & 0xffff); 	// initialize new on first run from ADC2
+			}
+			bP++;
+		}
+	}
+
+	MEAS_samplectr++;
+
+	// ADC Value to voltage conversion
+	//ZALOHA!!!! for(i=0; i<MEAS_ADC1_CHANNELS; i++) *(adcf+i) = ((float)((*(adc+i)) >> ADC1_OVERSAMLING))/ADC_MaxVal * ADV_RevVal; 		// Oversamling
+	//act_vals.voltage=adcf[0]*VOLTAGE_GAIN*VOLTAGE_CALIBRATION_GAIN;
+	//act_vals.current=(adcf[1]/CURRENT_GAIN)*CURRENT_CALIBRATION_GAIN;
+	u_raw[actual_measurement]=adc[0];
+	i_raw[actual_measurement]=adc[1];
+	temp_raw[actual_measurement]=adc[2];
+	//for(i=0; i<MEAS_ADC1_CHANNELS; i++) *(adcf+i) = ((float)((*(adc+i)) >> ADC1_OVERSAMLING))/ADC_MaxVal * ADV_RevVal;
+	actual_measurement++;
+	if (actual_measurement>=total_measurements){
+		for (int u = 0;u<total_measurements;u++){
+				i_sum+=(float)i_raw[u];
+				if (type!=0){
+					u_sum+=(float)u_raw[u];	
+				}
+				if (type==2){
+					temp_sum+=(float)temp_raw[u];
+				}
+		}
+		i_sum/=total_measurements;
+		i_sum=i_sum/ADC_MaxVal * ADV_RevVal;
+		act_vals.current=(i_sum/CURRENT_GAIN * CURRENT_CALIBRATION_GAIN)-CURRENT_OFFSET;
+		if (type!=0){
+			u_sum/=total_measurements;
+			u_sum=u_sum/ADC_MaxVal * ADV_RevVal;
+			act_vals.voltage=u_sum*VOLTAGE_GAIN*VOLTAGE_CALIBRATION_GAIN;
+			act_vals.power=act_vals.current*act_vals.voltage;
+		}
+		if (type==2){
+			temp_sum/=total_measurements;
+			temp_sum=temp_sum/ADC_MaxVal * ADV_RevVal;
+			act_vals.temperature=temp_sum*TEMP_GAIN;
+		}
+		MEAS_ACD1_update = 1;	// set ADC1 update flag
+	} else{
+		HAL_ADC_Start(&hadc2);																	// start ADC2 (slave) first!
+		HAL_ADCEx_MultiModeStart_DMA(&hadc1, ADC1_Buffer, (uint32_t)(ADC1_BufferSize * 2)); 	// start ADC1 /w Double Buffer
+	}
+	HAL_GPIO_TogglePin(GPIOB,GPIO_PIN_9);
+	
+}
+
+/*void calculateUITemp(void){
+	act_vals.voltage=adcf[0]*VOLTAGE_GAIN*VOLTAGE_CALIBRATION_GAIN;
+	act_vals.current=(adcf[1]/CURRENT_GAIN)*CURRENT_CALIBRATION_GAIN;
+	//current_values[i]=act_vals.current;
+	//act_vals.temperature=adcf[2]*TEMP_GAIN;
+}*/
+
+/*float averageCurrent(void){
+	double sum;
+	unsigned int total = NUMBER_OF_MES;
+	for(int i=0; i<total; i++) {
+		sum+=current_values[i];
+		current_values[i]=0;
+	}
+	return (float)(sum/((float)total));
+}*/
+// ********************************
+// *** FUNCTION IMPLEMENTATION ****
+// ********************************
+// ********* TEMPERATURE **********
+
